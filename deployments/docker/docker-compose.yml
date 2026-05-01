@@ -1,0 +1,47 @@
+services:
+  nextchat:
+    image: yidadaa/chatgpt-next-web:latest
+    container_name: nextchat
+    restart: unless-stopped
+    ports:
+      - "3081:3000"
+    environment:
+      OPENAI_API_KEY: dummy-key
+      BASE_URL: http://osap-aiops-agent:3080
+      CUSTOM_MODELS: +private-agent
+      DEFAULT_MODEL: private-agent
+      HIDE_USER_API_KEY: "1"
+      DISABLE_GPT4: "1"
+    depends_on:
+      - osap-aiops-agent
+
+  osap-aiops-agent:
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+    container_name: osap-aiops-agent
+    restart: unless-stopped
+    working_dir: /app
+    ports:
+      - "3080:3080"
+    environment:
+      AGENT_ENV: development
+      PYTHONUNBUFFERED: "1"
+      UV_CACHE_DIR: /root/.cache/uv
+      UV_LINK_MODE: copy
+      UV_PROJECT_ENVIRONMENT: /opt/venv
+    volumes:
+      - ../../:/app
+      - agent-uv-cache:/root/.cache/uv
+      - agent-venv:/opt/venv
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        uv sync
+        exec uv run uvicorn aiops_agent.main:app \
+          --host 0.0.0.0 \
+          --port 3080 \
+          --no-access-log \
+          --reload
+
+volumes:
+  agent-uv-cache:
+  agent-venv:
