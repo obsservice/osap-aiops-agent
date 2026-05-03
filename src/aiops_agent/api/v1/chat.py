@@ -8,6 +8,7 @@ import structlog
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from aiops_agent.api.deps import ContextDep, RequestIdDep
 from aiops_agent.schemas.chat import (
     ChatCompletionChunkChoice,
     ChatCompletionChunkDelta,
@@ -18,6 +19,7 @@ from aiops_agent.schemas.chat import (
     ChatCompletionResponse,
     ChatMessage,
 )
+from aiops_agent.schemas.context import RequestContext
 
 log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -51,35 +53,6 @@ async def chat():
         result += part
 
     return JSONResponse(content=result)
-
-
-async def call_private_agent(messages: list[ChatMessage]) -> str:
-    """
-    这里替换成你的真实 Agent 调用：
-    - LangGraph graph.ainvoke(...)
-    - RAG pipeline
-    - MCP Agent
-    - 自研 Agent
-    """
-    user_text = ""
-    for msg in reversed(messages):
-        if msg.role == "user":
-            user_text = msg.content or ""
-            break
-
-    return f"私有 Agent 收到：{user_text}"
-
-
-async def stream_private_agent(messages: list[ChatMessage]) -> AsyncIterator[str]:
-    """
-    这里替换成你的真实流式 Agent：
-    async for token in graph.astream(...):
-        yield token
-    """
-    answer = await call_private_agent(messages)
-    for char in answer:
-        yield char
-        await asyncio.sleep(0.02)
 
 
 def build_chat_completion_response(
@@ -135,11 +108,12 @@ def format_sse_chunk(chunk: ChatCompletionChunkResponse) -> str:
     response_model=ChatCompletionResponse,
     response_model_exclude_none=True,
 )
-async def chat_completions(req: ChatCompletionRequest) -> ChatCompletionResponse | StreamingResponse:
+async def chat_completions(req: ChatCompletionRequest, req_id: RequestIdDep, ctx: ContextDep) -> ChatCompletionResponse | StreamingResponse:
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
     log.info(
         "chat completions requested",
+        request_id=req_id,
         completion_id=completion_id,
         model=req.model,
         stream=req.stream,
@@ -148,8 +122,10 @@ async def chat_completions(req: ChatCompletionRequest) -> ChatCompletionResponse
         max_tokens=req.max_tokens,
     )
 
+    req_context = RequestContext(req_id, ctx, req.messages)
     if not req.stream:
-        content = await call_private_agent(req.messages)
+        result = await ctx.agent.call(req_context)
+        content = result["results"]
         return build_chat_completion_response(
             completion_id=completion_id,
             created=created,
@@ -158,7 +134,7 @@ async def chat_completions(req: ChatCompletionRequest) -> ChatCompletionResponse
         )
 
     async def sse_generator() -> AsyncIterator[str]:
-        async for token in stream_private_agent(req.messages):
+        async for token in ctx.agent.stream(req_context):
             chunk = build_chat_completion_chunk(
                 completion_id=completion_id,
                 created=created,
